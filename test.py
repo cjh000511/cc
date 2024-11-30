@@ -497,7 +497,7 @@ def main():
     schedule.every().day.at("23:00").do(run_trading_job)
 
     # 즉시 한 번 실행하고 싶다면 이 줄의 주석을 해제
-    run_trading_job()
+    #run_trading_job()
 
     # 스케줄러 실행
     while True:
