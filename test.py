@@ -1,30 +1,20 @@
 import os
-from dotenv import load_dotenv
-import pyupbit
-import pandas as pd
+import sys
 import json
-from openai import OpenAI
-import ta
-from ta.utils import dropna
 import time
-import requests
-import base64
-from PIL import Image
-import io
-from selenium import webdriver
-from selenium.webdriver.chrome.service import Service
-from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
-from webdriver_manager.chrome import ChromeDriverManager
-from selenium.common.exceptions import TimeoutException, ElementClickInterceptedException, WebDriverException, NoSuchElementException
 import logging
-from datetime import datetime, timedelta
-from pydantic import BaseModel
-from openai import OpenAI
-import sqlite3
 import schedule
+import requests
+import pandas as pd
+import numpy as np
+import pyupbit
+from datetime import datetime, timedelta
+from ta.volatility import BollingerBands
+from ta.momentum import RSIIndicator
+from ta.trend import MACD, SMAIndicator, EMAIndicator
+from openai import OpenAI
+from dotenv import load_dotenv
+import sqlite3
 
 class TradingDecision(BaseModel):
     decision: str
@@ -83,7 +73,7 @@ def generate_reflection(trades_df, current_market_data):
     
     # OpenAI API 호출로 AI의 반성 일기 및 개선 사항 생성 요청
     response = client.chat.completions.create(
-        model="gpt-4o-2024-08-06",
+        model="gpt-4o",
         messages=[
             {
                 "role": "system",
@@ -120,8 +110,19 @@ def get_db_connection():
 # 데이터베이스 초기화
 init_db()
 
-# 로깅 설정
-logging.basicConfig(level=logging.INFO)
+# 로깅 설정 개선
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.RotatingFileHandler(
+            '/home/ubuntu/trading/trading.log',
+            maxBytes=10*1024*1024,  # 10MB
+            backupCount=5
+        ),
+        logging.StreamHandler(sys.stdout)
+    ]
+)
 logger = logging.getLogger(__name__)
 
 load_dotenv()
@@ -199,7 +200,7 @@ def add_indicators(df):
     # RSI (Relative Strength Index) 추가
     df['rsi'] = ta.momentum.RSIIndicator(close=df['close'], window=14).rsi()
     
-    # MACD (Moving Average Convergence Divergence) 추가
+    # MACD (Moving Average Convergence Divergence) 추
     macd = ta.trend.MACD(close=df['close'])
     df['macd'] = macd.macd()
     df['macd_signal'] = macd.macd_signal()
@@ -317,8 +318,106 @@ def capture_and_encode_screenshot(driver):
         
         return base64_image
     except Exception as e:
-        logger.error(f"스크린샷 캡처 및 인코딩 중 오류 발생: {e}")
+        logger.error(f"스크린샷 캡처 및 인코 중 오류 발생: {e}")
         return None
+
+def get_onchain_data():
+    """
+    Dune Analytics API를 통해 온체인 데이터를 가져오는 함수
+    """
+    try:
+        headers = {
+            "x-dune-api-key": os.getenv("DUNE_API_KEY")
+        }
+        
+        # 거래소 순유입량 쿼리 (예시 리 ID)
+        exchange_flow = requests.get(
+            "https://api.dune.com/api/v1/query/1234567/results",
+            headers=headers
+        ).json()
+        
+        # 채굴자 지갑 데이터 쿼리
+        miner_data = requests.get(
+            "https://api.dune.com/api/v1/query/7654321/results",
+            headers=headers
+        ).json()
+        
+        # 해시레이트 데이터 쿼리
+        hashrate_data = requests.get(
+            "https://api.dune.com/api/v1/query/9876543/results",
+            headers=headers
+        ).json()
+        
+        return {
+            "exchange_inflow": exchange_flow.get('result', {}).get('rows', []),
+            "exchange_outflow": exchange_flow.get('result', {}).get('rows', []),
+            "miner_to_exchange": miner_data.get('result', {}).get('rows', []),
+            "miner_balance": miner_data.get('result', {}).get('rows', []),
+            "hashrate": hashrate_data.get('result', {}).get('rows', [])
+        }
+    except Exception as e:
+        logger.error(f"온체인 데이터 조회 중 오류 발생: {e}")
+        return None
+
+def analyze_onchain_signals(onchain_data):
+    """
+    온체인 데이터를 분석하여 매수/���도 신호를 생성하는 함수
+    """
+    if not onchain_data:
+        return {
+            "exchange_flow_signal": "neutral",
+            "miner_activity_signal": "neutral",
+            "hashrate_signal": "neutral"
+        }
+    
+    signals = {
+        "exchange_flow_signal": "neutral",
+        "miner_activity_signal": "neutral",
+        "hashrate_signal": "neutral"
+    }
+    
+    try:
+        # 데이터가 충분한지 확인
+        if onchain_data.get('exchange_inflow') and onchain_data.get('exchange_outflow'):
+            inflow = onchain_data['exchange_inflow'][-1] if onchain_data['exchange_inflow'] else 0
+            outflow = onchain_data['exchange_outflow'][-1] if onchain_data['exchange_outflow'] else 0
+            
+            if inflow and outflow:  # 둘 다 데이터가 있는 경우만
+                if inflow > outflow * 1.5:
+                    signals['exchange_flow_signal'] = "sell"
+                elif outflow > inflow * 1.5:
+                    signals['exchange_flow_signal'] = "buy"
+        
+        # 채굴자 활동 분석
+        if (onchain_data.get('miner_to_exchange') and 
+            onchain_data.get('miner_balance') and 
+            len(onchain_data['miner_balance']) >= 2):
+            
+            miner_to_exchange = onchain_data['miner_to_exchange'][-1] if onchain_data['miner_to_exchange'] else 0
+            miner_balance = onchain_data['miner_balance'][-1] if onchain_data['miner_balance'] else 0
+            prev_miner_balance = onchain_data['miner_balance'][-2] if len(onchain_data['miner_balance']) > 1 else miner_balance
+            
+            if miner_balance > 0:  # 0으로 나누기 방지
+                if miner_to_exchange > miner_balance * 0.1:
+                    signals['miner_activity_signal'] = "sell"
+                elif miner_balance > prev_miner_balance:
+                    signals['miner_activity_signal'] = "buy"
+        
+        # 해시레이트 분석
+        if onchain_data.get('hashrate') and len(onchain_data['hashrate']) >= 2:
+            current_hashrate = onchain_data['hashrate'][-1]
+            prev_hashrate = onchain_data['hashrate'][-2]
+            
+            if prev_hashrate > 0:  # 0으로 나누기 방지
+                hashrate_change = (current_hashrate - prev_hashrate) / prev_hashrate * 100
+                if hashrate_change < -10:
+                    signals['hashrate_signal'] = "sell"
+        
+        return signals
+        
+    except Exception as e:
+        logger.error(f"온체인 신호 분석 중 오류 발: {e}")
+        return signals  # 오류 발생 시 기본값 반환
 
 def ai_trading():
     try:
@@ -327,64 +426,68 @@ def ai_trading():
         secret = os.getenv("UPBIT_SECRET_KEY")
         upbit = pyupbit.Upbit(access, secret)
 
-        # 1. 현재 투자 상태 조회
-        all_balances = upbit.get_balances()
-        filtered_balances = [balance for balance in all_balances if balance['currency'] in ['BTC', 'KRW']]
+        # 온체인 데이터 수집 및 분석
+        onchain_data = get_onchain_data()
+        onchain_signals = analyze_onchain_signals(onchain_data)
         
-        # 2. 오더북 조회
-        orderbook = pyupbit.get_orderbook("KRW-BTC")
-        
-        # 3. 차트 데이터 조회 및 보조지표 추가
+        # 기본 시장 데이터 수집
         df_daily = pyupbit.get_ohlcv("KRW-BTC", interval="day", count=30)
-        df_daily = dropna(df_daily)
-        df_daily = add_indicators(df_daily)
-        
-        # 패턴 감지 및 피보나치 분석 추가
-        pattern = head_and_shoulders(df_daily)
-        fib_levels = fibonacci_retracement(df_daily)
-        
         df_hourly = pyupbit.get_ohlcv("KRW-BTC", interval="minute60", count=24)
-        df_hourly = dropna(df_hourly)
-        df_hourly = add_indicators(df_hourly)
+        
+        # 지표 추가
+        if not df_daily.empty:
+            df_daily = add_indicators(df_daily)
+        if not df_hourly.empty:
+            df_hourly = add_indicators(df_hourly)
 
-        # 4. 공포 탐욕 지수
-        fear_greed_index = get_fear_and_greed_index()
-
-        # 5. 차트 이미지 캡처
-        chart_image = None
-        driver = None
-        try:
-            driver = create_driver()
-            driver.get("https://upbit.com/full_chart?code=CRIX.UPBIT.KRW-BTC")
-            logger.info("페이지 로드 완료")
-            
-            WebDriverWait(driver, 60).until(
-                EC.presence_of_element_located((By.TAG_NAME, "body"))
-            )
-            time.sleep(40)
-            
-            perform_chart_actions(driver)
-            time.sleep(10)
-            
-            chart_image = capture_and_encode_screenshot(driver)
-            logger.info("스크린샷 캡처 완료")
-        finally:
-            if driver:
-                driver.quit()
-
-        # 6. AI 분석을 위한 데이터 준비
-        market_data = {
-            "fear_greed_index": fear_greed_index,
-            "orderbook": orderbook,
-            "daily_ohlcv": df_daily.to_dict(),
-            "hourly_ohlcv": df_hourly.to_dict(),
-            "pattern_analysis": {
-                "head_and_shoulders": pattern,
-                "fibonacci_levels": fib_levels
-            }
+        # 오더북 데이터
+        orderbook = pyupbit.get_orderbook("KRW-BTC")
+        simplified_orderbook = {
+            'asks': orderbook['asks'][:5] if orderbook and 'asks' in orderbook else [],
+            'bids': orderbook['bids'][:5] if orderbook and 'bids' in orderbook else []
         }
 
-        # 7. OpenAI API 호출
+        # Fear & Greed Index
+        fear_greed_index = get_fear_and_greed_index()
+
+        # 현재 포지션 정보
+        balances = upbit.get_balances()
+        filtered_balances = [balance for balance in balances if balance['currency'] in ['BTC', 'KRW']]
+
+        # 시장 데이터 구조화
+        market_data = {
+            'daily_data': df_daily.to_dict() if not df_daily.empty else {},
+            'hourly_data': df_hourly.to_dict() if not df_hourly.empty else {},
+            'current_price': pyupbit.get_current_price("KRW-BTC"),
+            'orderbook': simplified_orderbook,
+            'fear_greed_index': fear_greed_index,
+            'onchain_signals': onchain_signals
+        }
+
+        # AI 분석을 위한 데이터 준비
+        daily_data = {
+            'close': df_daily['close'].iloc[-1],
+            'rsi': df_daily['rsi'].iloc[-1],
+            'macd': df_daily['macd'].iloc[-1],
+            'bb_upper': df_daily['bb_bbh'].iloc[-1],
+            'bb_lower': df_daily['bb_bbl'].iloc[-1],
+            'sma_20': df_daily['sma_20'].iloc[-1],
+            'ema_12': df_daily['ema_12'].iloc[-1]
+        } if not df_daily.empty else {}
+
+        hourly_data = {
+            'close': df_hourly['close'].iloc[-1],
+            'rsi': df_hourly['rsi'].iloc[-1],
+            'macd': df_hourly['macd'].iloc[-1],
+            'bb_upper': df_hourly['bb_bbh'].iloc[-1],
+            'bb_lower': df_hourly['bb_bbl'].iloc[-1]
+        } if not df_hourly.empty else {}
+
+        # 피보나치 레벨 계산
+        fib_levels = fibonacci_retracement(df_daily)
+        pattern = head_and_shoulders(df_daily)
+
+        # OpenAI API 호출
         client = OpenAI()
         conn = get_db_connection()
         recent_trades = get_recent_trades(conn)
@@ -392,46 +495,56 @@ def ai_trading():
 
         # AI 분석 요청
         response = client.chat.completions.create(
-            model="gpt-4-vision-preview",  # 모델 변경
+            model="gpt-4",
             messages=[
                 {
                     "role": "system",
-                    "content": "You are an expert in Bitcoin investing..."
+                    "content": """You are an expert cryptocurrency trading analyst. 
+                    Provide your analysis in the following JSON format:
+                    {
+                        "decision": "buy/sell/hold",
+                        "percentage": <integer between 0-100>,
+                        "reason": "<detailed analysis>"
+                    }"""
                 },
                 {
                     "role": "user",
-                    "content": [
-                        {
-                            "type": "text",
-                            "text": f"""Current investment status: {json.dumps(filtered_balances)}
-                            Orderbook: {json.dumps(orderbook)}
-                            Daily OHLCV with indicators: {df_daily.to_json()}
-                            Hourly OHLCV with indicators: {df_hourly.to_json()}
-                            Pattern Analysis: {json.dumps({'pattern': pattern, 'fibonacci': fib_levels})}
-                            Fear and Greed Index: {json.dumps(fear_greed_index)}"""
-                        },
-                        {
-                            "type": "image_url",
-                            "image_url": {
-                                "url": f"data:image/png;base64,{chart_image}"
-                            }
-                        }
-                    ]
+                    "content": f"""Technical Analysis Data:
+                    1. Fibonacci Levels: {json.dumps(fib_levels) if fib_levels else 'None'}
+                    2. On-Chain Signals: {json.dumps(onchain_signals)}
+                    3. Current Price Position:
+                       - Daily Indicators: {json.dumps(daily_data)}
+                       - Hourly Indicators: {json.dumps(hourly_data)}
+                    4. Pattern Detection: {pattern}
+                    5. Market Context:
+                       - Fear and Greed Index: {json.dumps(fear_greed_index)}
+                       - Order Book Depth: {json.dumps(simplified_orderbook)}
+                    6. Current Position: {json.dumps(filtered_balances)}"""
                 }
             ],
-            response_format={
-                "type": "json_object"  # 간단한 JSON 응답 형식으로 변경
-            },
             max_tokens=4095
         )
 
-        # 결과 처리
-        result_json = json.loads(response.choices[0].message.content)
-        result = TradingDecision(
-            decision=result_json.get('decision', 'hold'),
-            percentage=result_json.get('percentage', 0),
-            reason=result_json.get('reason', 'No reason provided')
-        )
+        # 응답 처리 개선
+        try:
+            result_text = response.choices[0].message.content.strip()
+            # JSON 형식이 아닌 텍스트가 포함되어 있을 수 있으므로 정제
+            if result_text.find('{') != -1:
+                result_text = result_text[result_text.find('{'):result_text.rfind('}')+1]
+            result_json = json.loads(result_text)
+            
+            result = TradingDecision(
+                decision=result_json.get('decision', 'hold'),
+                percentage=result_json.get('percentage', 0),
+                reason=result_json.get('reason', 'No reason provided')
+            )
+        except (json.JSONDecodeError, KeyError, AttributeError) as e:
+            logger.error(f"AI 응답 파싱 오류: {e}")
+            result = TradingDecision(
+                decision='hold',
+                percentage=0,
+                reason='Error parsing AI response'
+            )
 
         # 거래 실행 로직...
         # (기존 거래 실행 코드를 여기에 추가)
@@ -486,23 +599,59 @@ def ai_trading():
 
 def run_trading_job():
     try:
-        ai_trading()
+        # API 요청 제한 확인
+        if check_api_limits():
+            ai_trading()
+        else:
+            logger.warning("API 호출 한도 도달. 다음 주기까지 대기")
+            time.sleep(60)
+    except requests.exceptions.RequestException as e:
+        logger.error(f"네트워크 오류: {e}")
+        time.sleep(300)  # 5분 대기
     except Exception as e:
         logger.error(f"Trading job 실행 중 오류 발생: {e}")
+        time.sleep(300)
+
+def check_api_limits():
+    """API 호출 한도 확인"""
+    try:
+        remaining = int(requests.get("https://api.upbit.com/v1/status/remaining").json()["remaining"])
+        return remaining > 10  # 최소 10개의 요청 여유 확보
+    except:
+        return True  # 확인 실패시 기본적으로 진행
 
 def main():
-    # 스케줄 설정
-    schedule.every().day.at("10:00").do(run_trading_job)
-    schedule.every().day.at("17:00").do(run_trading_job)
-    schedule.every().day.at("23:00").do(run_trading_job)
+    try:
+        # 서버 시작 시 기존 거래 상태 확인
+        check_existing_positions()
+        
+        # 스케줄 설정
+        schedule.every().day.at("03:00").do(run_trading_job)
+        schedule.every().day.at("10:00").do(run_trading_job)
+        schedule.every().day.at("16:00").do(run_trading_job)
+        schedule.every().day.at("22:00").do(run_trading_job)
+        
+        while True:
+            try:
+                schedule.run_pending()
+                time.sleep(60)
+            except Exception as e:
+                logger.error(f"스케줄러 오류: {e}")
+                time.sleep(300)
+                
+    except Exception as e:
+        logger.error(f"Main 실행 중 치명적 오류: {e}")
+        sys.exit(1)
 
-    # 즉시 한 번 실행하고 싶다면 이 줄의 주석을 해제
-    #run_trading_job()
-
-    # 스케줄러 실행
-    while True:
-        schedule.run_pending()
-        time.sleep(1)
+def check_existing_positions():
+    """서버 재시작 시 기존 포지션 확인"""
+    try:
+        upbit = pyupbit.Upbit(os.getenv("UPBIT_ACCESS_KEY"), os.getenv("UPBIT_SECRET_KEY"))
+        balances = upbit.get_balances()
+        for balance in balances:
+            logger.info(f"보유 자산: {balance['currency']} - {balance['balance']}")
+    except Exception as e:
+        logger.error(f"포지션 확인 중 오류: {e}")
 
 if __name__ == "__main__":
     main()
