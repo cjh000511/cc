@@ -26,6 +26,7 @@ from openai import OpenAI
 import sqlite3
 import schedule
 import sys
+from logging.handlers import RotatingFileHandler
 
 class TradingDecision(BaseModel):
     decision: str
@@ -121,13 +122,13 @@ def get_db_connection():
 # 데이터베이스 초기화
 init_db()
 
-# 로깅 설정 개선
+# 로깅 설정
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.RotatingFileHandler(
-            '/home/ubuntu/trading/trading.log',
+        RotatingFileHandler(
+            '/home/ec2-user/cc/trading.log',
             maxBytes=10*1024*1024,  # 10MB
             backupCount=5
         ),
@@ -372,7 +373,7 @@ def get_onchain_data():
 
 def analyze_onchain_signals(onchain_data):
     """
-    온체인 데이터를 분석하여 매수/���도 신호를 생성하는 함수
+    온체인 데이터를 분석하여 매수/도 신호를 생성하는 함수
     """
     if not onchain_data:
         return {
@@ -557,7 +558,7 @@ def ai_trading():
                 reason='Error parsing AI response'
             )
 
-        # 거래 실행 로직...
+        # 거래 행 로직...
         # (기존 거래 실행 코드를 여기에 추가)
 
     except Exception as e:
