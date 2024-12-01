@@ -1,20 +1,31 @@
 import os
-import sys
-import json
-import time
-import logging
-import schedule
-import requests
-import pandas as pd
-import numpy as np
-import pyupbit
-from datetime import datetime, timedelta
-from ta.volatility import BollingerBands
-from ta.momentum import RSIIndicator
-from ta.trend import MACD, SMAIndicator, EMAIndicator
-from openai import OpenAI
 from dotenv import load_dotenv
+import pyupbit
+import pandas as pd
+import json
+from openai import OpenAI
+import ta
+from ta.utils import dropna
+import time
+import requests
+import base64
+from PIL import Image
+import io
+from selenium import webdriver
+from selenium.webdriver.chrome.service import Service
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from webdriver_manager.chrome import ChromeDriverManager
+from selenium.common.exceptions import TimeoutException, ElementClickInterceptedException, WebDriverException, NoSuchElementException
+import logging
+from datetime import datetime, timedelta
+from pydantic import BaseModel
+from openai import OpenAI
 import sqlite3
+import schedule
+import sys
 
 class TradingDecision(BaseModel):
     decision: str
