@@ -659,11 +659,29 @@ def check_existing_positions():
     """서버 재시작 시 기존 포지션 확인"""
     try:
         upbit = pyupbit.Upbit(os.getenv("UPBIT_ACCESS_KEY"), os.getenv("UPBIT_SECRET_KEY"))
+        if not upbit:
+            logger.error("Upbit 객체 생성 실패")
+            return
+
         balances = upbit.get_balances()
+        if not balances:
+            logger.info("보유 자산이 없습니다.")
+            return
+
         for balance in balances:
-            logger.info(f"보유 자산: {balance['currency']} - {balance['balance']}")
+            try:
+                if isinstance(balance, dict):  # dictionary 타입인지 확인
+                    currency = balance.get('currency', 'UNKNOWN')
+                    amount = balance.get('balance', '0')
+                    logger.info(f"보유 자산: {currency} - {amount}")
+                else:
+                    logger.error(f"잘못된 잔고 데이터 형식: {balance}")
+            except Exception as e:
+                logger.error(f"잔고 데이터 처리 중 오류: {e}")
+
     except Exception as e:
         logger.error(f"포지션 확인 중 오류: {e}")
+        logger.error(f"API 키 확인 필요: ACCESS_KEY={bool(os.getenv('UPBIT_ACCESS_KEY'))}, SECRET_KEY={bool(os.getenv('UPBIT_SECRET_KEY'))}")
 
 if __name__ == "__main__":
     main()
