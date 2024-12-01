@@ -442,7 +442,7 @@ def ai_trading():
         onchain_data = get_onchain_data()
         onchain_signals = analyze_onchain_signals(onchain_data)
         
-        # 기본 시장 데이터 수집
+        # 기본 시��� 데이터 수집
         df_daily = pyupbit.get_ohlcv("KRW-BTC", interval="day", count=30)
         df_hourly = pyupbit.get_ohlcv("KRW-BTC", interval="minute60", count=24)
         
@@ -632,9 +632,80 @@ def check_api_limits():
     except:
         return True  # 확인 실패시 기본적으로 진행
 
+def check_existing_positions():
+    """서버 재시작 시 기존 포지션 확인"""
+    try:
+        # API 키 확인
+        access_key = os.getenv("UPBIT_ACCESS_KEY")
+        secret_key = os.getenv("UPBIT_SECRET_KEY")
+        
+        if not access_key or not secret_key:
+            logger.error("API 키가 설정되지 않았습니다.")
+            return
+            
+        logger.info("Upbit API 연결 시도...")
+        upbit = pyupbit.Upbit(access_key, secret_key)
+        
+        # API 연결 테스트
+        try:
+            test = upbit.get_balances()
+            if test is None:
+                logger.error("API 응답이 없습니다.")
+                return
+        except Exception as e:
+            logger.error(f"API 테스트 실패: {e}")
+            return
+
+        # 잔고 조회
+        balances = upbit.get_balances()
+        if not balances:
+            logger.info("보유 자산이 없습니다.")
+            return
+            
+        # 잔고 정보 출력
+        for balance in balances:
+            if isinstance(balance, dict):
+                currency = balance.get('currency')
+                balance_amount = balance.get('balance')
+                avg_buy_price = balance.get('avg_buy_price')
+                
+                if currency and balance_amount:
+                    logger.info(f"화폐: {currency}")
+                    logger.info(f"보유량: {balance_amount}")
+                    logger.info(f"평균매수가: {avg_buy_price}")
+                    logger.info("-" * 20)
+            else:
+                logger.error(f"잘못된 잔고 데이터 형식: {balance}")
+
+    except Exception as e:
+        logger.error(f"포지션 확인 중 오류 발생: {e}")
+        logger.error("환경 변수 상태:")
+        logger.error(f"ACCESS_KEY 존재: {bool(access_key)}")
+        logger.error(f"SECRET_KEY 존재: {bool(secret_key)}")
+
+# 환경 변수 로드 확인
+def check_environment():
+    """환경 변수 설정 확인"""
+    required_vars = ["UPBIT_ACCESS_KEY", "UPBIT_SECRET_KEY"]
+    missing_vars = []
+    
+    for var in required_vars:
+        if not os.getenv(var):
+            missing_vars.append(var)
+    
+    if missing_vars:
+        logger.error(f"필수 환경 변수가 설정되지 않았습니다: {', '.join(missing_vars)}")
+        return False
+    return True
+
 def main():
     try:
-        # 서버 시작 시 기존 거래 상태 확인
+        # 환경 변수 체크
+        if not check_environment():
+            logger.error("필수 환경 변수 설정이 필요합니다.")
+            sys.exit(1)
+            
+        # 기존 포지션 확인
         check_existing_positions()
         
         # 스케줄 설정
@@ -654,34 +725,6 @@ def main():
     except Exception as e:
         logger.error(f"Main 실행 중 치명적 오류: {e}")
         sys.exit(1)
-
-def check_existing_positions():
-    """서버 재시작 시 기존 포지션 확인"""
-    try:
-        upbit = pyupbit.Upbit(os.getenv("UPBIT_ACCESS_KEY"), os.getenv("UPBIT_SECRET_KEY"))
-        if not upbit:
-            logger.error("Upbit 객체 생성 실패")
-            return
-
-        balances = upbit.get_balances()
-        if not balances:
-            logger.info("보유 자산이 없습니다.")
-            return
-
-        for balance in balances:
-            try:
-                if isinstance(balance, dict):  # dictionary 타입인지 확인
-                    currency = balance.get('currency', 'UNKNOWN')
-                    amount = balance.get('balance', '0')
-                    logger.info(f"보유 자산: {currency} - {amount}")
-                else:
-                    logger.error(f"잘못된 잔고 데이터 형식: {balance}")
-            except Exception as e:
-                logger.error(f"잔고 데이터 처리 중 오류: {e}")
-
-    except Exception as e:
-        logger.error(f"포지션 확인 중 오류: {e}")
-        logger.error(f"API 키 확인 필요: ACCESS_KEY={bool(os.getenv('UPBIT_ACCESS_KEY'))}, SECRET_KEY={bool(os.getenv('UPBIT_SECRET_KEY'))}")
 
 if __name__ == "__main__":
     main()
