@@ -18,6 +18,11 @@ from openai import OpenAI
 import sqlite3
 import schedule
 
+# .env 파일에서 환경변수 로드
+load_dotenv()
+access_key = os.getenv('UPBIT_ACCESS_KEY')
+secret_key = os.getenv('UPBIT_SECRET_KEY')
+
 class TradingDecision(BaseModel):
     decision: str
     percentage: int
@@ -42,6 +47,21 @@ def init_db():
                   krw_balance REAL,
                   btc_avg_buy_price REAL,
                   btc_krw_price REAL,
+                  rsi REAL,
+                  macd REAL,
+                  volume REAL,
+                  bb_upper REAL,
+                  bb_lower REAL,
+                  bb_middle REAL,
+                  fibo_0 REAL,
+                  fibo_236 REAL,
+                  fibo_382 REAL,
+                  fibo_500 REAL,
+                  fibo_618 REAL,
+                  fibo_786 REAL,
+                  fibo_1 REAL,
+                  trend_strength INTEGER,
+                  trend_direction TEXT,
                   reflection TEXT)''')
     conn.commit()
     return conn
@@ -89,7 +109,7 @@ def generate_reflection(trades_df, current_market_data):
     
     # OpenAI API 호출로 AI의 반성 일기 및 개선 사항 생성 요청
     response = client.chat.completions.create(
-        model="gpt-4o",
+        model="gpt-4",
         messages=[
             {
                 "role": "system",
@@ -123,7 +143,7 @@ def generate_reflection(trades_df, current_market_data):
 def get_db_connection():
     return sqlite3.connect('bitcoin_trades.db')
 
-# 데이터베이스 초기화
+# 데이터베이스 초기���
 init_db()
 
 # 로깅 설정
@@ -169,17 +189,15 @@ def head_and_shoulders(df):
         return "Error in pattern detection"
 
 def fibonacci_retracement(df):
-    """
-    피보나치 되돌림 레벨을 계산하는 함수
-    """
     try:
-        # 최근 고점과 저점 찾기
+        if df.empty:
+            return {}
+            
         recent_high = df['high'].max()
         recent_low = df['low'].min()
-        
-        # 피보나치 되돌림 레벨 계산 (23.6%, 38.2%, 50%, 61.8%, 78.6%)
         diff = recent_high - recent_low
-        levels = {
+        
+        return {
             '0.0': recent_low,
             '0.236': recent_low + 0.236 * diff,
             '0.382': recent_low + 0.382 * diff,
@@ -188,12 +206,9 @@ def fibonacci_retracement(df):
             '0.786': recent_low + 0.786 * diff,
             '1.0': recent_high
         }
-        
-        return levels
-    
     except Exception as e:
-        logger.error(f"피보나치 되돌림 계산 중 오류: {e}")
-        return None
+        logger.error(f"피보나치 레트레이스먼트 계산 중 오류: {e}")
+        return {}
 
 def add_indicators(df):
     # 기존 지표들 추가 (볼린저 밴드, RSI, MACD 등)
@@ -205,7 +220,7 @@ def add_indicators(df):
     # RSI (Relative Strength Index) 추가
     df['rsi'] = ta.momentum.RSIIndicator(close=df['close'], window=14).rsi()
     
-    # MACD (Moving Average Convergence Divergence) 추가
+    # MACD (Moving Average Convergence Divergence) ���가
     macd = ta.trend.MACD(close=df['close'])
     df['macd'] = macd.macd()
     df['macd_signal'] = macd.macd_signal()
@@ -335,21 +350,21 @@ def calculate_daily_volatility(df_daily=None):
             df_daily = pyupbit.get_ohlcv("KRW-BTC", interval="day", count=30)
             
         if df_daily is None or df_daily.empty:
-            logger.error("변동성 계산을 위한 데이터 획득 실패")
+            logger.error("일일 변동성 계산을 위한 데이터 획득 실패")
             return 0.02  # 기본값 2% 반환
             
         # 일일 변동성 계산 (종가 기준 표준편차)
         daily_returns = df_daily['close'].pct_change().dropna()
         volatility = daily_returns.std()
         
-        # 단 값 방지
+        # 단 값 지
         volatility = max(min(volatility, 0.1), 0.01)  # 1%~10% 범위로 제한
         
         logger.info(f"계산된 일일 변동성: {volatility:.2%}")
         return volatility
         
     except Exception as e:
-        logger.error(f"변동성 계산 중 오류 발생: {e}")
+        logger.error(f"일일 변동성 계산 중 오류 발생: {e}")
         return 0.02  # 오류 발생시 기본값 2% 반환
 
 def implement_risk_management(upbit, current_position, current_price):
@@ -512,657 +527,802 @@ def get_ai_analysis(market_data, recent_trades):
             reason=f'Error in AI analysis: {str(e)}'
         )
 
-def get_market_data():
-    """여러 시간대의 시장 데이터 수집"""
+def get_market_data(lookback_period=100):
+    """충분한 기간의 시장 데이터 가져오기"""
     try:
-        # 추세 분석용 데이터
-        df_weekly = pyupbit.get_ohlcv("KRW-BTC", interval="week", count=52)  # 주봉 데이터
-        if df_weekly is None or df_weekly.empty:
-            logger.error("주봉 데이터 수집 실패")
-            return None, None, None, None
-        df_daily = pyupbit.get_ohlcv("KRW-BTC", interval="day", count=30)    # 일봉 데이터
-        if df_daily is None or df_daily.empty:
-            logger.error("일봉 데이터 수집 실패")
-            return None, None, None, None
-        
-        # 매매 타점 분석용 데이터
-        df_30min = pyupbit.get_ohlcv("KRW-BTC", interval="minute30", count=48)  # 30분봉 이터
-        if df_30min is None or df_30min.empty:
-            logger.error("30분봉 데이터 수집 실패")
-            return None, None, None, None
-        df_1min = pyupbit.get_ohlcv("KRW-BTC", interval="minute1", count=60)    # 1분봉 데이터
-        if df_1min is None or df_1min.empty:
-            logger.error("1분봉 데이터 수집 실패")
-            return None, None, None, None
-        
-        # 각 데이터프레임에 지표 추가
-        for df in [df_weekly, df_daily, df_30min, df_1min]:
-            if not df.empty:
-                df = add_indicators(df)
-        
-        return df_weekly, df_daily, df_30min, df_1min
+        df = pyupbit.get_ohlcv("KRW-BTC", interval="minute60", count=lookback_period)
+        if df is None or df.empty:
+            logging.error("시장 데이터 가져오기 실패")
+            return None
+        return df
     except Exception as e:
-        logger.error(f"시장 데이터 수집 중 오류 발생: {e}")
-        return None, None, None, None
-
-def analyze_trend(df_weekly, df_daily):
-    """주봉/일봉 기반 추세 분석"""
-    try:
-        if df_weekly is None or df_daily is None:
-            logger.error("추세 분석을 위한 데이터가 부족합니다")
-            return {'direction': 'neutral', 'strength': 0, 'reason': ['데이터 부족']}
-        
-        trend = {
-            'direction': 'neutral',
-            'strength': 0,
-            'reason': []
-        }
-        
-        # 주봉 분석
-        weekly_ma20 = df_weekly['sma_20'].iloc[-1]
-        weekly_price = df_weekly['close'].iloc[-1]
-        weekly_trend = 'bullish' if weekly_price > weekly_ma20 else 'bearish'
-        
-        # 일봉 분석
-        daily_ma20 = df_daily['sma_20'].iloc[-1]
-        daily_price = df_daily['close'].iloc[-1]
-        daily_trend = 'bullish' if daily_price > daily_ma20 else 'bearish'
-        
-        # 추세 강도 계산
-        if weekly_trend == daily_trend:
-            trend['direction'] = weekly_trend
-            trend['strength'] = 2
-            trend['reason'].append(f"주봉/일봉 모두 {weekly_trend} 추세")
-        else:
-            trend['direction'] = daily_trend
-            trend['strength'] = 1
-            trend['reason'].append("단기/장기 추세 불일치")
-        
-        # 추가적인 추세 확인
-        if df_weekly['macd_diff'].iloc[-1] > 0:
-            trend['strength'] += 1
-            trend['reason'].append("주봉 MACD 상승")
-        
-        if df_daily['macd_diff'].iloc[-1] > 0:
-            trend['strength'] += 1
-            trend['reason'].append("일봉 MACD 상승")
-            
-        # 볼륨 가중 추세 분석
-        volume_weighted_price = (df_daily['close'] * df_daily['volume']).sum() / df_daily['volume'].sum()
-        if volume_weighted_price > daily_ma20:
-            trend['strength'] += 0.5
-            trend['reason'].append("거래량 가중 가격이 MA20 상회")
-            
-        # 추세 지속성 체크
-        consecutive_trend = 0
-        for i in range(len(df_daily)-1, max(0, len(df_daily)-5), -1):
-            if df_daily['close'].iloc[i] > df_daily['close'].iloc[i-1]:
-                consecutive_trend += 1
-            else:
-                break
-        if consecutive_trend >= 3:
-            trend['strength'] += 0.5
-            trend['reason'].append(f"{consecutive_trend}일 연속 상승")
-            
-        return trend
-    
-    except Exception as e:
-        logger.error(f"추세 분석 중 오류 발생: {e}")
-        return {'direction': 'neutral', 'strength': 0, 'reason': ['분석 오류']}
-
-def analyze_elliott_wave(df):
-    """엘리엇 파동 분석"""
-    try:
-        # 최근 데이터 추출 (30개 데이터 포인트)
-        recent_data = df[-30:].copy()
-        
-        # 고점과 저점 기
-        peaks = []
-        troughs = []
-        
-        for i in range(1, len(recent_data)-1):
-            if recent_data['high'].iloc[i] > recent_data['high'].iloc[i-1] and \
-               recent_data['high'].iloc[i] > recent_data['high'].iloc[i+1]:
-                peaks.append((i, recent_data['high'].iloc[i]))
-            
-            if recent_data['low'].iloc[i] < recent_data['low'].iloc[i-1] and \
-               recent_data['low'].iloc[i] < recent_data['low'].iloc[i+1]:
-                troughs.append((i, recent_data['low'].iloc[i]))
-        
-        # 파동 패턴 분석
-        wave_pattern = {
-            'current_wave': 0,
-            'direction': 'unknown',
-            'confidence': 0,
-            'reason': []
-        }
-        
-        if len(peaks) >= 3 and len(troughs) >= 2:
-            # 상승 파동(1-3-5) 패턴 확인
-            if peaks[-1][1] > peaks[-2][1] > peaks[-3][1]:
-                wave_pattern['current_wave'] = 5
-                wave_pattern['direction'] = 'bullish'
-                wave_pattern['confidence'] = 0.7
-                wave_pattern['reason'].append("상승 5파동 진행 중")
-            
-            # 하락 파동(A-C-E) 패턴 확인
-            elif peaks[-1][1] < peaks[-2][1] < peaks[-3][1]:
-                wave_pattern['current_wave'] = 3
-                wave_pattern['direction'] = 'bearish'
-                wave_pattern['confidence'] = 0.7
-                wave_pattern['reason'].append("하락 3파동 진행 중")
-            
-            # 조정 파동(2-4) 패턴 확인
-            if troughs[-1][1] < troughs[-2][1]:
-                wave_pattern['current_wave'] = 4
-                wave_pattern['direction'] = 'correction'
-                wave_pattern['confidence'] = 0.5
-                wave_pattern['reason'].append("조정 4파동 진행 중")
-        
-        # 피보나치 되돌림과 결합
-        fib_levels = fibonacci_retracement(df)
-        current_price = df['close'].iloc[-1]
-        
-        # 파동별 피보나치 레벨 
-        if wave_pattern['current_wave'] in [2, 4]:  # 조정 파동
-            if current_price > fib_levels['0.618']:
-                wave_pattern['confidence'] += 0.2
-                wave_pattern['reason'].append("조정 파동 61.8% 되돌림 도달")
-        elif wave_pattern['current_wave'] == 3:  # 상승/하락 3파동
-            if current_price > fib_levels['1.618']:
-                wave_pattern['confidence'] += 0.2
-                wave_pattern['reason'].append("3파동 161.8% 확장 도달")
-        
-        return wave_pattern
-    
-    except Exception as e:
-        logger.error(f"엘리엇 파동 분석 중 오류 발생: {e}")
-        return {'current_wave': 0, 'direction': 'unknown', 'confidence': 0, 'reason': ['분석 오류']}
-
-def analyze_entry_point(df_30min, df_1min, trend):
-    """30분봉/1분봉 기반 매매 타점 분석"""
-    try:
-        entry = {
-            'action': 'hold',
-            'confidence': 0,
-            'reason': [],
-            'technical_data': {}
-        }
-        
-        # RSI 분석 (기준값 조)
-        rsi_30min = df_30min['rsi'].iloc[-1]
-        entry['technical_data']['rsi'] = rsi_30min
-        if rsi_30min < 35:  # 35로 완화
-            entry['action'] = 'buy'
-            entry['confidence'] += 0.3
-            entry['reason'].append("30분봉 RSI 매매 구간")
-        elif rsi_30min > 65:  # 65로 완화
-            entry['action'] = 'sell'
-            entry['confidence'] += 0.3
-            entry['reason'].append("30분봉 RSI 과매수 구간")
-        
-        # 볼린저밴드 분석 (기준값 조정)
-        current_price = df_1min['close'].iloc[-1]
-        bb_upper = df_1min['bb_bbh'].iloc[-1]
-        bb_lower = df_1min['bb_bbl'].iloc[-1]
-        bb_middle = df_1min['bb_bbm'].iloc[-1]
-        
-        # 추세가 강할 때는 더 적극적인 매매
-        if trend['strength'] >= 2:
-            if trend['direction'] == 'bullish' and current_price > bb_middle:
-                entry['action'] = 'buy'
-                entry['confidence'] += 0.3
-                entry['reason'].append("상승추세에서 중간밴드 상향 돌파")
-            elif trend['direction'] == 'bearish' and current_price < bb_middle:
-                entry['action'] = 'sell'
-                entry['confidence'] += 0.3
-                entry['reason'].append("하락추세에서 중간밴드 상향 돌파")
-        
-        # 기술적 데이터 추가
-        entry['technical_data'].update({
-            'current_price': current_price,
-            'bb_upper': bb_upper,
-            'bb_lower': bb_lower,
-            'bb_middle': bb_middle,
-            'trend_strength': trend['strength'],
-            'trend_direction': trend['direction'],
-            'volume': df_30min['volume'].iloc[-1],
-            'volume_ma': df_30min['volume'].rolling(window=20).mean().iloc[-1],
-            'fibo_levels': fibonacci_retracement(df_30min),
-            'patterns': detect_candlestick_patterns(df_30min)
-        })
-        
-        logger.info(f"매매 타점 분석 결과: RSI={rsi_30min:.2f}, 현재가격={current_price:,.0f}, BB상단={bb_upper:,.0f}, BB하단={bb_lower:,.0f}, 추세강도={trend['strength']}")
-        return entry
-        
-    except Exception as e:
-        logger.error(f"매매 타점 분석 중 오류 발생: {e}")
-        return {'action': 'hold', 'confidence': 0, 'reason': ['분석 오류']}
-
-def analyze_volume_profile(df):
-    """거래량 프로파일 분석"""
-    try:
-        volume_mean = df['volume'].mean()
-        volume_std = df['volume'].std()
-        current_volume = df['volume'].iloc[-1]
-        
-        return {
-            'volume_trend': 'high' if current_volume > volume_mean + volume_std else 'low',
-            'volume_ratio': current_volume / volume_mean,
-            'volume_zscore': (current_volume - volume_mean) / volume_std
-        }
-    except Exception as e:
-        logger.error(f"거래량 프���파일 분석 중 오류: {e}")
+        logging.error(f"시장 데이터 조회 중 오류: {e}")
         return None
 
-def calculate_risk_score(volatility_data, volume_data):
-    """리스크 점수 계산"""
+def calculate_technical_indicators(df):
+    """기술적 지표 계산"""
     try:
-        # 변동성 점수 (0-1)
-        volatility_score = min(volatility_data['natr'] / 10, 1)
-        
-        # 거래량 점수 (0-1)
-        volume_score = min(volume_data['volume_ratio'] / 3, 1)
-        
-        # 종합 리스크 점수
-        risk_score = (volatility_score * 0.7) + (volume_score * 0.3)
-        
-        return risk_score
-    except Exception as e:
-        logger.error(f"리스크 점수 계산 중 오류: {e}")
-        return 0.5
-
-def optimize_position_size(risk_score, momentum_data):
-    """포지션 사이즈 최적화"""
-    try:
-        # 기본 포지션 사이즈 (리스크 점수 반비례)
-        base_size = 1 - (risk_score * 0.5)  # 50-100% 범위
-        
-        # 모멘텀 조정
-        if momentum_data['ppo'] > 0:
-            momentum_multiplier = 1.2
-        else:
-            momentum_multiplier = 0.8
-            
-        return base_size * momentum_multiplier
-    except Exception as e:
-        logger.error(f"포지션 사이즈 최적화 중 오류: {e}")
-        return 0.5
-
-def analyze_market_conditions(df_daily):
-    """시장 상황 분석"""
-    try:
-        conditions = {}
-        
-        # RSI 계산
-        rsi = ta.momentum.RSIIndicator(df_daily['close']).rsi().iloc[-1]
-        conditions['rsi'] = rsi
-        
-        # MACD 계산
-        macd = ta.trend.MACD(df_daily['close'])
-        conditions['macd'] = macd.macd().iloc[-1]
-        conditions['macd_signal'] = macd.macd_signal().iloc[-1]
-        conditions['macd_diff'] = macd.macd_diff().iloc[-1]
-        
-        # 볼린저 밴드 계산
-        bb = ta.volatility.BollingerBands(df_daily['close'])
-        conditions['bb_upper'] = bb.bollinger_hband().iloc[-1]
-        conditions['bb_lower'] = bb.bollinger_lband().iloc[-1]
-        conditions['bb_middle'] = bb.bollinger_mavg().iloc[-1]
-        
-        # 거래량 분석
-        conditions['volume'] = df_daily['volume'].iloc[-1]
-        conditions['volume_ma'] = df_daily['volume'].rolling(window=20).mean().iloc[-1]
-        
-        logger.info(f"시장 상황 분석 완료: RSI={rsi:.2f}")
-        return conditions
-        
-    except Exception as e:
-        logger.error(f"시장 상황 분석 중 오류: {e}")
-        return None
-
-def enhanced_ai_decision(market_conditions, entry_point):
-    """AI 기반 거래 결정"""
-    try:
-        if market_conditions is None or entry_point is None:
-            return {'decision': 'hold', 'position_size': 0, 'reason': '데이터 부족'}
-
-        decision = {
-            'decision': 'hold',
-            'position_size': 0,
-            'reason': []
-        }
-
-        # 기술적 데이터 분석
-        technical_data = entry_point.get('technical_data', {})
-        
-        # 피보나치 레벨 분석
-        fibo_levels = technical_data.get('fibo_levels', {})
-        current_price = technical_data.get('current_price', 0)
-        if fibo_levels:
-            support = fibo_levels.get('0.618', 0)
-            resistance = fibo_levels.get('0.382', 0)
-            if current_price < support:
-                decision['decision'] = 'buy'
-                decision['position_size'] = 0.2
-                decision['reason'].append("피보나치 지지선 접근")
-            elif current_price > resistance:
-                decision['decision'] = 'sell'
-                decision['position_size'] = 0.2
-                decision['reason'].append("피보나치 저항선 접근")
-
-        # 차트 패턴 분석
-        patterns = technical_data.get('patterns', [])
-        if patterns:
-            bullish_patterns = ['Hammer', 'Morning Star', 'Bullish Engulfing']
-            bearish_patterns = ['Shooting Star', 'Evening Star', 'Bearish Engulfing']
-            
-            for pattern in patterns:
-                if pattern in bullish_patterns:
-                    decision['decision'] = 'buy'
-                    decision['position_size'] = max(decision['position_size'], 0.15)
-                    decision['reason'].append(f"강세 패턴 감지: {pattern}")
-                elif pattern in bearish_patterns:
-                    decision['decision'] = 'sell'
-                    decision['position_size'] = max(decision['position_size'], 0.15)
-                    decision['reason'].append(f"약세 패턴 감지: {pattern}")
-
-        # 기존 분석 (RSI, 볼린저밴드 등)
-        rsi = entry_point.get('rsi', 50)
-        if rsi < 30:
-            decision['decision'] = 'buy'
-            decision['position_size'] = max(decision['position_size'], 0.2)
-            decision['reason'].append(f"RSI 과매도({rsi:.1f})")
-        elif rsi > 70:
-            decision['decision'] = 'sell'
-            decision['position_size'] = max(decision['position_size'], 0.2)
-            decision['reason'].append(f"RSI 과매수({rsi:.1f})")
-
-        # 추세 강도 반영
-        trend_strength = technical_data.get('trend_strength', 0)
-        if trend_strength >= 2:
-            decision['position_size'] = min(decision['position_size'] * 1.5, 1.0)
-            decision['reason'].append(f"강한 추세 감지(강도: {trend_strength})")
-
-        # 최종 결정 정리
-        decision['reason'] = ' | '.join(decision['reason']) if decision['reason'] else '특별한 시그널 없음'
-        
-        logger.info(f"AI 의사결정 결과: {decision}")
-        return decision
-
-    except Exception as e:
-        logger.error(f"AI 의사결정 중 오류: {e}")
-        return {'decision': 'hold', 'position_size': 0, 'reason': f'의사결정 오류: {str(e)}'}
-
-def detect_candlestick_patterns(df):
-    """캔들스틱 패턴 감지"""
-    try:
-        patterns = []
-        
-        # 최근 3개의 캔들로 패턴 분석
-        recent_candles = df.tail(3)
-        
-        # 망치형(Hammer) 패턴
-        last_candle = recent_candles.iloc[-1]
-        body = abs(last_candle['open'] - last_candle['close'])
-        lower_shadow = min(last_candle['open'], last_candle['close']) - last_candle['low']
-        upper_shadow = last_candle['high'] - max(last_candle['open'], last_candle['close'])
-        
-        if lower_shadow > (body * 2) and upper_shadow < body:
-            patterns.append("Hammer")
-        
-        # 역망치형(Inverted Hammer) 패턴
-        if upper_shadow > (body * 2) and lower_shadow < body:
-            patterns.append("Inverted Hammer")
-        
-        # 도지(Doji) 패턴
-        if body < (last_candle['high'] - last_candle['low']) * 0.1:
-            patterns.append("Doji")
-        
-        return patterns
-        
-    except Exception as e:
-        logger.error(f"캔들스틱 패턴 감지 중 오류: {e}")
-        return []
-
-def log_monitoring_data(upbit, trend_data=None, entry_data=None):
-    """주기적인 모니터링 데이터 저장"""
-    try:
-        conn = get_db_connection()
-        
-        # 현재 잔고 정보 가져오기
-        balances = upbit.get_balances()
-        btc_balance = float(next((balance['balance'] for balance in balances if balance['currency'] == 'BTC'), 0))
-        krw_balance = float(next((balance['balance'] for balance in balances if balance['currency'] == 'KRW'), 0))
-        btc_avg_buy_price = float(next((balance['avg_buy_price'] for balance in balances if balance['currency'] == 'BTC'), 0))
-        current_price = pyupbit.get_current_price("KRW-BTC")
-        
-        # 결정 및 이유 구성
-        decision = "hold"
-        percentage = 0
-        reason = "정기 모니터링"
-        
-        if trend_data and isinstance(trend_data, dict) and entry_data and isinstance(entry_data, dict):
-            decision = entry_data.get('action', 'hold')
-            percentage = int(entry_data.get('confidence', 0) * 100)
-            reasons = []
-            if 'reason' in trend_data:
-                reasons.extend(trend_data['reason'])
-            if 'reason' in entry_data:
-                reasons.extend(entry_data['reason'])
-            reason = " | ".join(reasons) if reasons else "정기 모니터링"
-        
-        # DB에 저장
-        log_trade(
-            conn=conn,
-            decision=decision,
-            percentage=percentage,
-            reason=reason,
-            btc_balance=btc_balance,
-            krw_balance=krw_balance,
-            btc_avg_buy_price=btc_avg_buy_price,
-            btc_krw_price=current_price,
-            reflection=""
-        )
-        
-        logger.info("모니터링 데이터가 DB에 저장되었습니다.")
-        
-    except Exception as e:
-        logger.error(f"모니터링 데이터 저장 중 오류 발생: {e}")
-    finally:
-        if 'conn' in locals():
-            conn.close()
-
-def determine_trading_decision(technical_analysis, market_data):
-    """기술적 분석과 시장 데이터를 기반으로 거래 결정"""
-    try:
-        decision = 'hold'
-        
-        # 추세 확인
-        trend = technical_analysis.get('trend', {})
-        if trend.get('strength', 0) >= 2:
-            decision = 'buy' if trend.get('direction') == 'bullish' else 'sell'
-        
-        # 모멘텀 확인
-        momentum = market_data.get('momentum', {})
-        if momentum.get('ppo', 0) > 0 and momentum.get('tsi', 0) > 0:
-            decision = 'buy'
-        elif momentum.get('ppo', 0) < 0 and momentum.get('tsi', 0) < 0:
-            decision = 'sell'
-        
-        return decision
-        
-    except Exception as e:
-        logger.error(f"거래 결정 도출 중 오류: {e}")
-        return 'hold'
-
-def calculate_confidence_score(technical_analysis, market_data):
-    """거래 결정에 대한 신뢰도 점수 계산"""
-    try:
-        confidence = 0.0
-        
-        # 추세 강도 반영
-        trend_strength = technical_analysis.get('trend', {}).get('strength', 0)
-        confidence += (trend_strength / 4) * 0.4
-        
-        # 모멘텀 지표 반영
-        momentum = market_data.get('momentum', {})
-        if momentum.get('ppo', 0) * momentum.get('tsi', 0) > 0:
-            confidence += 0.3
-        
-        return min(confidence, 1.0)
-        
-    except Exception as e:
-        logger.error(f"신뢰도 점수 계산 �� 오류: {e}")
-        return 0.0
-
-def generate_trading_reasoning(technical_analysis, market_data, decision):
-    """거래 결정에 대한 상세 근거 생성"""
-    try:
-        reasons = []
-        
-        # 추세 분석 근거
-        trend = technical_analysis.get('trend', {})
-        reasons.append(f"추세 분석: {trend.get('direction', 'neutral')} (강도: {trend.get('strength', 0)})")
-        
-        # 모멘텀 분석 근거
-        momentum = market_data.get('momentum', {})
-        reasons.append(f"PPO: {momentum.get('ppo', 0):.2f}, TSI: {momentum.get('tsi', 0):.2f}")
-        
-        return ' | '.join(reasons)
-        
-    except Exception as e:
-        logger.error(f"거래 근거 생성 중 오류: {e}")
-        return "분석 패턴 없음"
-
-def execute_trade(upbit, decision):
-    """거래 실행"""
-    try:
-        if decision['decision'] == "buy":
-            # 매수 가능한 KRW 잔고 확인
-            krw_balance = upbit.get_balance("KRW")
-            if krw_balance is None or float(krw_balance) < 5000:  # 최소 거래금액
-                logger.info("매수 가능한 KRW 잔고 부족")
-                return None
-                
-            # 매수할 금액 계산 (confidence에 따라 조정)
-            buy_amount = float(krw_balance) * decision['position_size']
-            if buy_amount < 5000:
-                buy_amount = 5000  # 최소 거래금액
-                
-            # 매수 주문
-            logger.info(f"매수 시도: {buy_amount:,.0f}원")
-            result = upbit.buy_market_order("KRW-BTC", buy_amount)
-            logger.info(f"매수 결과: {result}")
-            
-        elif decision['decision'] == "sell":
-            # BTC 잔고 확인
-            btc_balance = upbit.get_balance("BTC")
-            if btc_balance is None or float(btc_balance) <= 0:
-                logger.info("매도할 BTC 잔고 없음")
-                return None
-                
-            # 매도할 수량 계산 (confidence에 따라 조정)
-            sell_amount = float(btc_balance) * decision['position_size']
-            current_price = pyupbit.get_current_price("KRW-BTC")
-            
-            if current_price is None or sell_amount * current_price < 5000:  # 최소 거래금액 체크
-                logger.info("매도 금액이 최소 거래금액 미만")
-                return None
-                
-            # 매도 주문
-            logger.info(f"매도 시도: {sell_amount:.8f} BTC")
-            result = upbit.sell_market_order("KRW-BTC", sell_amount)
-            logger.info(f"매도 결과: {result}")
-            
-        else:
-            logger.info("Hold 상태 유지")
+        if df is None or df.empty:
             return None
             
-        return result
+        # RSI 계산 (14기간)
+        df['rsi'] = ta.momentum.rsi(df['close'], window=14)
         
+        # MACD 계산 (12, 26, 9)
+        macd = ta.trend.MACD(df['close'])
+        df['macd'] = macd.macd()
+        df['macd_signal'] = macd.macd_signal()
+        df['macd_diff'] = macd.macd_diff()
+        
+        # 볼린저 밴드 계산 (20기간, 2표준편차)
+        bollinger = ta.volatility.BollingerBands(df['close'])
+        df['bb_upper'] = bollinger.bollinger_hband()
+        df['bb_middle'] = bollinger.bollinger_mavg()
+        df['bb_lower'] = bollinger.bollinger_lband()
+        
+        # 이동평균 계산
+        df['ma5'] = df['close'].rolling(window=5).mean()
+        df['ma20'] = df['close'].rolling(window=20).mean()
+        df['volume_ma'] = df['volume'].rolling(window=20).mean()
+        
+        # NaN 값 제거
+        df = df.dropna()
+        
+        return df
     except Exception as e:
-        logger.error(f"거래 실행 중 오류 발생: {e}")
+        logging.error(f"기술적 지표 계산 중 오류: {e}")
         return None
 
-def run_trading_job():
-    """정해진 시간에 실행되는 트레이딩 작업"""
+def analyze_market():
+    """시장 상황 분석"""
     try:
-        logger.info("Trading job 시작...")
-        
-        # Upbit 객체 생성
-        upbit = pyupbit.Upbit(os.getenv("UPBIT_ACCESS_KEY"), os.getenv("UPBIT_SECRET_KEY"))
-        if not upbit:
-            logger.error("Upbit 연결 실패")
-            return
+        df = get_market_data()
+        if df is None:
+            return None
             
-        # 시장 데이터 수집 및 분석
-        df_weekly, df_daily, df_30min, df_1min = get_market_data()
-        if any(df is None for df in [df_weekly, df_daily, df_30min, df_1min]):
-            logger.error("시장 데이터 수집 실패")
-            return
+        df = calculate_technical_indicators(df)
+        if df is None:
+            return None
             
-        # 시장 상황 분석
-        market_conditions = analyze_market_conditions(df_daily)
+        # 최신 데이터 추출
+        latest = df.iloc[-1]
         
-        # 추세 분석
-        trend = analyze_trend(df_weekly, df_daily)
+        # 차트 패턴 감지
+        patterns = detect_chart_patterns(df)
         
-        # 매매 타점 분석
-        entry = analyze_entry_point(df_30min, df_1min, trend)
+        # 엘리엇 파동 분석
+        elliott_wave = analyze_elliott_wave(df)
         
-        # AI 분석
-        ai_result = enhanced_ai_decision(market_conditions, entry)
+        # 피보나치 레벨
+        fibo_levels = calculate_fibonacci_levels(df)
         
-        # 모니터링 데이터 저장
-        log_monitoring_data(upbit, trend, entry)
+        # 공포탐욕지수 계산
+        fear_greed = calculate_fear_greed_index(df)
         
-        # 거래 실행 여부 결정
-        if ai_result and ai_result['decision'] != 'hold':
-            execute_trade(upbit, ai_result)
+        market_data = {
+            'price': {
+                'current': latest['close'],
+                'open': latest['open'],
+                'high': latest['high'],
+                'low': latest['low']
+            },
+            'indicators': {
+                'rsi': latest['rsi'],
+                'macd': latest['macd'],
+                'macd_signal': latest['macd_signal'],
+                'macd_diff': latest['macd_diff'],
+                'bb_upper': latest['bb_upper'],
+                'bb_lower': latest['bb_lower'],
+                'bb_middle': latest['bb_middle']
+            },
+            'volume': {
+                'current': latest['volume'],
+                'ma': latest['volume_ma']
+            },
+            'trends': {
+                'ma5': latest['ma5'],
+                'ma20': latest['ma20']
+            },
+            'patterns': patterns,
+            'elliott_wave': elliott_wave,
+            'fibonacci': fibo_levels,
+            'fear_greed': fear_greed
+        }
         
-        logger.info("Trading job 완료")
+        logging.info(f"시장 상황 분석 완료: RSI={market_data['indicators']['rsi']:.2f}")
+        return market_data
         
     except Exception as e:
-        logger.error(f"Trading job 실행 중 오류 발생: {e}")
+        logging.error(f"시장 분석 중 오류: {e}")
+        return None
 
-def setup_schedule():
-    # 기존 스케줄
-    schedule.every().day.at("08:30").do(run_trading_job)
-    schedule.every().day.at("15:30").do(run_trading_job)
-    schedule.every().day.at("21:30").do(run_trading_job)
-    schedule.every().day.at("23:00").do(run_trading_job)
-    schedule.every().day.at("04:30").do(run_trading_job)
-    
-    # 모니터링 데이터 저장 (5분마다)
-    upbit = pyupbit.Upbit(os.getenv("UPBIT_ACCESS_KEY"), os.getenv("UPBIT_SECRET_KEY"))
-    schedule.every(5).minutes.do(log_monitoring_data, upbit)
+def check_balance_and_conditions(upbit, decision):
+    """잔고 확인 및 거래 조건 검증"""
+    try:
+        krw_balance = float(upbit.get_balance("KRW"))
+        btc_balance = float(upbit.get_balance("KRW-BTC"))
+        current_price = pyupbit.get_current_price("KRW-BTC")
+        
+        if decision['decision'] == 'buy':
+            if krw_balance < 5000:  # 최소 거래금액
+                logging.info("매수 가능한 KRW 잔고 부족")
+                return False
+        elif decision['decision'] == 'sell':
+            if btc_balance <= 0:
+                logging.info("매도할 BTC 잔고 없음")
+                return False
+                
+        return True
+    except Exception as e:
+        logging.error(f"잔고 확인 중 오류: {e}")
+        return False
+
+def execute_trading_strategy():
+    """트레이딩 전략 실행"""
+    try:
+        # 시장 분석
+        market_data = analyze_market()
+        if not market_data:
+            logging.error("시장 분석 실패")
+            return
+            
+        # 매매 타점 분석
+        technical_data = analyze_entry_point(market_data)
+        if not technical_data:
+            logging.error("매매 타점 분석 실패")
+            return
+            
+        logging.info(f"매매 타점 분석 결과: RSI={technical_data['rsi']:.2f}, "
+                    f"현재가격={technical_data['current_price']:,.0f}, "
+                    f"BB상단={technical_data['bb_upper']:,.0f}, "
+                    f"BB하단={technical_data['bb_lower']:,.0f}, "
+                    f"추세강도={technical_data['trend_strength']}")
+        
+        # AI 분석
+        logging.info("AI 분석 시작...")
+        ai_decision = analyze_with_ai(market_data, technical_data)
+        if not ai_decision:
+            logging.error("AI 분석 실패")
+            return
+            
+        logging.info(f"AI 분석 완료: {ai_decision}")
+        
+        # 잔고 및 조건 확인
+        if not check_balance_and_conditions(upbit, ai_decision):
+            return
+            
+        # 거래 실행
+        execute_trade(ai_decision)
+        
+        # 모니터링 데이터 저장
+        save_monitoring_data(market_data, technical_data, ai_decision)
+        
+    except Exception as e:
+        logging.error(f"거래 전략 실행 중 오류: {e}")
 
 def main():
+    """메인 함수"""
+    logging.basicConfig(level=logging.INFO)
+    logging.info("자동 거래 프로그램 시작")
+    
     try:
-        # 로깅 설정
-        logger.info("자동 거래 프로그램 시작")
+        # 초기 설정
+        initialize_database()
         
-        # 환경 변수 확인
-        if not os.getenv("UPBIT_ACCESS_KEY") or not os.getenv("UPBIT_SECRET_KEY"):
-            logger.error("UPBIT API 키가 정되지 않았습니다.")
-            raise ValueError("UPBIT API 키 설정이 필요합니다.")
+        # 초기 실행
+        logging.info("초기 거래 작업 실행")
+        execute_trading_strategy()
         
-        # 즉시 실
-        logger.info("초기 거래 작업 실행")
-        run_trading_job()
-        
-        # 스케줄러 실행
-        logger.info("스케줄러 시작")
-        setup_schedule()
+        # 스케줄러 설정
+        logging.info("스케줄러 시작")
+        schedule.every().day.at("09:45").do(execute_trading_strategy) 
+        schedule.every().day.at("17:00").do(execute_trading_strategy)  
+        schedule.every().day.at("23:00").do(execute_trading_strategy)  
+        schedule.every().day.at("04:00").do(execute_trading_strategy) 
         
         while True:
             schedule.run_pending()
             time.sleep(1)
             
     except Exception as e:
-        logger.error(f"메인 프로그램 실행 중 오류 발생: {e}")
-        raise
+        logging.error(f"프로그램 실행 중 오류 발생: {e}")
+
+def analyze_with_ai(market_data, technical_data):
+    """AI 기반 매매 분석"""
+    try:
+        prompt = f"""
+Based on the following comprehensive market analysis:
+
+1. Price Action:
+- Current: {market_data['price']['current']:,.0f} KRW
+- Daily Range: {market_data['price']['low']:,.0f} - {market_data['price']['high']:,.0f}
+
+2. Technical Indicators:
+- RSI: {market_data['indicators']['rsi']:.2f}
+- MACD: {market_data['indicators']['macd']:.2f} (Signal: {market_data['indicators']['macd_signal']:.2f})
+- Bollinger Bands:
+  * Upper: {market_data['indicators']['bb_upper']:,.0f}
+  * Middle: {market_data['indicators']['bb_middle']:,.0f}
+  * Lower: {market_data['indicators']['bb_lower']:,.0f}
+
+3. Chart Patterns:
+{market_data['patterns']}
+
+4. Elliott Wave Analysis:
+- Current Wave: {market_data['elliott_wave']['current_wave']}
+- Wave Position: {market_data['elliott_wave']['position']}
+- Trend Direction: {market_data['elliott_wave']['trend']}
+
+5. Fibonacci Levels:
+{market_data['fibonacci']}
+
+6. Market Sentiment:
+- Fear & Greed Index: {market_data['fear_greed']}
+- Volume Analysis: {market_data['volume']['current']:.2f} vs MA {market_data['volume']['ma']:.2f}
+
+7. Trend Analysis:
+- MA5 vs MA20: {market_data['trends']['ma5']:,.0f} vs {market_data['trends']['ma20']:,.0f}
+- Trend Strength: {technical_data['trend_strength']}
+- Overall Direction: {technical_data['trend_direction']}
+
+Analyze all these factors and provide a comprehensive trading decision.
+Your response must be in valid JSON format with the following structure:
+{{
+    "decision": "buy/sell/hold",
+    "percentage": <number between 0-100>,
+    "reason": "<detailed explanation including pattern recognition, wave analysis, and sentiment>",
+    "risk_level": "low/medium/high",
+    "stop_loss": <suggested stop loss percentage>
+}}
+"""
+        
+        client = OpenAI()
+        response = client.chat.completions.create(
+            model="gpt-4",
+            messages=[
+                {
+                    "role": "system",
+                    "content": "You are an expert cryptocurrency trading analyst specializing in technical analysis, Elliott Wave Theory, and market psychology. Provide comprehensive trading decisions in strict JSON format only."
+                },
+                {
+                    "role": "user",
+                    "content": prompt
+                }
+            ],
+            temperature=0.3
+        )
+        
+        # 응답 처리 및 JSON 파싱
+        result_text = response.choices[0].message.content.strip()
+        logging.info(f"AI Response: {result_text}")
+        
+        try:
+            json_start = result_text.find('{')
+            json_end = result_text.rfind('}') + 1
+            if json_start >= 0 and json_end > json_start:
+                result_json = json.loads(result_text[json_start:json_end])
+            else:
+                raise ValueError("No JSON found in response")
+                
+            return {
+                'decision': result_json.get('decision', 'hold'),
+                'position_size': result_json.get('percentage', 0) / 100,
+                'reason': result_json.get('reason', 'No reason provided'),
+                'risk_level': result_json.get('risk_level', 'medium'),
+                'stop_loss': result_json.get('stop_loss', 5)
+            }
+        except json.JSONDecodeError as je:
+            logging.error(f"JSON 파싱 오류: {je}")
+            return {
+                'decision': 'hold',
+                'position_size': 0,
+                'reason': f'JSON parsing error: {str(je)}'
+            }
+            
+    except Exception as e:
+        logging.error(f"AI 분석 중 오류: {e}")
+        return {
+            'decision': 'hold',
+            'position_size': 0,
+            'reason': f'Error in AI analysis: {str(e)}'
+        }
+
+def initialize_database():
+    """데이터베이스 초기화"""
+    try:
+        conn = sqlite3.connect('bitcoin_trades.db')
+        c = conn.cursor()
+        
+        # trades 테이블 생성 (컬럼명 수정)
+        c.execute('''CREATE TABLE IF NOT EXISTS trades
+                     (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                      timestamp TEXT,
+                      decision TEXT,
+                      percentage REAL,
+                      reason TEXT,
+                      btc_balance REAL,
+                      krw_balance REAL,
+                      btc_avg_buy_price REAL,
+                      btc_krw_price REAL,
+                      rsi REAL,
+                      macd REAL,
+                      volume REAL,
+                      bb_upper REAL,
+                      bb_middle REAL,
+                      bb_lower REAL,
+                      trend_strength INTEGER,
+                      trend_direction TEXT)''')
+                      
+        conn.commit()
+        conn.close()
+        logging.info("데이터베이스 초기화 완료")
+        
+    except Exception as e:
+        logging.error(f"데이터베이스 초기화 중 오류: {e}")
+
+def save_monitoring_data(market_data, technical_data, ai_decision):
+    """모니터링 데이터 저장"""
+    try:
+        conn = sqlite3.connect('bitcoin_trades.db')
+        c = conn.cursor()
+        
+        btc_balance = float(upbit.get_balance("KRW-BTC"))
+        krw_balance = float(upbit.get_balance("KRW"))
+        avg_buy_price = float(upbit.get_avg_buy_price("KRW-BTC"))
+        
+        c.execute("""
+            INSERT INTO trades (
+                timestamp, decision, percentage, reason,
+                btc_balance, krw_balance, btc_avg_buy_price,
+                btc_krw_price, rsi, macd, volume,
+                bb_upper, bb_middle, bb_lower,
+                trend_strength, trend_direction
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            ai_decision['decision'],
+            ai_decision['position_size'] * 100,
+            ai_decision['reason'],
+            btc_balance,
+            krw_balance,
+            avg_buy_price,
+            market_data['price']['current'],
+            technical_data['rsi'],
+            market_data['indicators']['macd'],
+            market_data['volume']['current'],
+            market_data['indicators']['bb_upper'],
+            market_data['indicators']['bb_middle'],
+            market_data['indicators']['bb_lower'],
+            technical_data['trend_strength'],
+            technical_data['trend_direction']
+        ))
+        
+        conn.commit()
+        conn.close()
+        logging.info("모니터링 데이터 저장 완료")
+        
+    except Exception as e:
+        logging.error(f"모니터링 데이터 저장 중 오류: {e}")
+
+def analyze_entry_point(market_data):
+    """매매 타점 분석"""
+    try:
+        current_price = market_data['price']['current']
+        
+        # 시장 데이터 가져오기
+        df = get_market_data()
+        if df is None:
+            return None
+        
+        # 추세 강도 분석
+        trend_strength = 0
+        if market_data['trends']['ma5'] > market_data['trends']['ma20']:
+            trend_strength += 1
+        if market_data['volume']['current'] > market_data['volume']['ma']:
+            trend_strength += 1
+        if market_data['indicators']['macd'] > market_data['indicators']['macd_signal']:
+            trend_strength += 1
+            
+        # 추세 방향 분석
+        trend_direction = 'bullish' if trend_strength >= 2 else 'bearish'
+        
+        # 피보나치 레벨 계산
+        fibo_levels = calculate_fibonacci_levels(df)
+        
+        technical_data = {
+            'rsi': market_data['indicators']['rsi'],
+            'current_price': current_price,
+            'bb_upper': market_data['indicators']['bb_upper'],
+            'bb_lower': market_data['indicators']['bb_lower'],
+            'bb_middle': market_data['indicators']['bb_middle'],
+            'trend_strength': trend_strength,
+            'trend_direction': trend_direction,
+            'volume': market_data['volume']['current'],
+            'volume_ma': market_data['volume']['ma'],
+            'fibo_levels': fibo_levels,
+            'patterns': detect_chart_patterns(df)
+        }
+        
+        logging.info(f"매매 타점 분석 결과: RSI={technical_data['rsi']:.2f}, 현재가격={technical_data['current_price']:,.0f}, BB상단={technical_data['bb_upper']:,.0f}, BB하단={technical_data['bb_lower']:,.0f}, 추세강도={technical_data['trend_strength']}")
+        return technical_data
+        
+    except Exception as e:
+        logging.error(f"매매 타점 분석 중 오류: {e}")
+        return None
+
+def calculate_fibonacci_levels(df):
+    """피보나치 레벨 계산"""
+    try:
+        # 최근 고점과 저점 찾기
+        recent_high = df['high'].tail(20).max()
+        recent_low = df['low'].tail(20).min()
+        price_range = recent_high - recent_low
+        
+        # 피보나치 레벨 계산
+        fibo_levels = {
+            "0": recent_low,
+            "0.236": recent_low + price_range * 0.236,
+            "0.382": recent_low + price_range * 0.382,
+            "0.5": recent_low + price_range * 0.5,
+            "0.618": recent_low + price_range * 0.618,
+            "0.786": recent_low + price_range * 0.786,
+            "1": recent_high
+        }
+        
+        # 현재가와 가장 가까운 피보나치 레벨 찾기
+        current_price = df['close'].iloc[-1]
+        closest_level = min(fibo_levels.items(), key=lambda x: abs(float(x[1]) - current_price))
+        
+        return {
+            "levels": fibo_levels,
+            "closest_level": closest_level[0],
+            "price_at_level": closest_level[1]
+        }
+        
+    except Exception as e:
+        logging.error(f"피보나치 레벨 계산 중 오류: {e}")
+        return {
+            "levels": {},
+            "closest_level": "Unknown",
+            "price_at_level": 0
+        }
+
+def execute_trade(decision):
+    """거래 실행"""
+    try:
+        if decision['decision'] == 'buy':
+            # 매수 가능한 KRW 잔고 확인
+            krw_balance = float(upbit.get_balance("KRW"))
+            if krw_balance < 5000:  # 최소 거래금액
+                logging.info("매수 가능한 KRW 잔고 부족")
+                return
+                
+            # 매수 금액 계산 (총 잔고의 30%)
+            buy_amount = krw_balance * decision['position_size']
+            if buy_amount >= 5000:
+                upbit.buy_market_order("KRW-BTC", buy_amount)
+                logging.info(f"매수 주문 실행: {buy_amount:,.0f}원")
+                
+        elif decision['decision'] == 'sell':
+            # 매도 가능한 BTC 잔고 확인
+            btc_balance = float(upbit.get_balance("KRW-BTC"))
+            if btc_balance <= 0:
+                logging.info("매도할 BTC 잔고 없음")
+                return
+                
+            # 매도 수량 계산 (보유량의 30%)
+            sell_amount = btc_balance * decision['position_size']
+            if sell_amount > 0:
+                upbit.sell_market_order("KRW-BTC", sell_amount)
+                logging.info(f"매도 주문 실행: {sell_amount:.8f}BTC")
+                
+    except Exception as e:
+        logging.error(f"거래 실행 중 오류: {e}")
+
+def setup_schedule():
+    """스케줄 설정"""
+    try:
+        schedule.every().hour.at(":00").do(execute_trading_strategy)
+        logging.info("스케줄러 설정 완료")
+    except Exception as e:
+        logging.error(f"스케줄러 설정 중 오류: {e}")
+
+def detect_chart_patterns(df):
+    """차트 패턴 감지"""
+    try:
+        patterns = []
+        
+        # 캔들스틱 패턴
+        if is_doji(df):
+            patterns.append("Doji")
+        if is_hammer(df):
+            patterns.append("Hammer")
+        if is_shooting_star(df):
+            patterns.append("Shooting Star")
+            
+        # 추세 패턴
+        if is_double_top(df):
+            patterns.append("Double Top")
+        if is_double_bottom(df):
+            patterns.append("Double Bottom")
+        if is_head_and_shoulders(df):
+            patterns.append("Head and Shoulders")
+            
+        return patterns if patterns else ["No significant patterns detected"]
+        
+    except Exception as e:
+        logging.error(f"차트 패턴 감지 중 오류: {e}")
+        return ["Pattern detection error"]
+
+def analyze_elliott_wave(df):
+    """엘리엇 파동 분석"""
+    try:
+        # 최근 100개 데이터로 파동 분석
+        wave_data = df.tail(100)
+        
+        # 추세 방향 확인
+        trend = "bullish" if wave_data['close'].iloc[-1] > wave_data['close'].iloc[-20] else "bearish"
+        
+        # 파동 위치 추정
+        wave_position = estimate_wave_position(wave_data)
+        
+        return {
+            "current_wave": wave_position['wave'],
+            "position": wave_position['position'],
+            "trend": trend,
+            "confidence": wave_position['confidence']
+        }
+        
+    except Exception as e:
+        logging.error(f"엘리엇 파동 분석 중 오류: {e}")
+        return {
+            "current_wave": "Unknown",
+            "position": "Unknown",
+            "trend": "Unknown",
+            "confidence": 0
+        }
+
+def calculate_fibonacci_levels(df):
+    """피보나치 레벨 계산"""
+    try:
+        # 최근 고점과 저점 찾기
+        recent_high = df['high'].tail(20).max()
+        recent_low = df['low'].tail(20).min()
+        price_range = recent_high - recent_low
+        
+        # 피보나치 레벨 계산
+        fibo_levels = {
+            "0": recent_low,
+            "0.236": recent_low + price_range * 0.236,
+            "0.382": recent_low + price_range * 0.382,
+            "0.5": recent_low + price_range * 0.5,
+            "0.618": recent_low + price_range * 0.618,
+            "0.786": recent_low + price_range * 0.786,
+            "1": recent_high
+        }
+        
+        # 현재가와 가장 가까운 피보나치 레벨 찾기
+        current_price = df['close'].iloc[-1]
+        closest_level = min(fibo_levels.items(), key=lambda x: abs(float(x[1]) - current_price))
+        
+        return {
+            "levels": fibo_levels,
+            "closest_level": closest_level[0],
+            "price_at_level": closest_level[1]
+        }
+        
+    except Exception as e:
+        logging.error(f"피보나치 레벨 계산 중 오류: {e}")
+        return {
+            "levels": {},
+            "closest_level": "Unknown",
+            "price_at_level": 0
+        }
+
+def calculate_fear_greed_index(df):
+    """공포탐욕지수 계산"""
+    try:
+        # 변동성 계산
+        volatility = df['close'].pct_change().std() * 100
+        
+        # 거래량 변화
+        volume_change = (df['volume'].iloc[-1] / df['volume'].mean() - 1) * 100
+        
+        # RSI 기반 과매수/과매도
+        rsi = df['rsi'].iloc[-1]
+        
+        # 가격 모멘텀
+        price_momentum = (df['close'].iloc[-1] / df['close'].iloc[-20] - 1) * 100
+        
+        # 지표들을 종합하여 0-100 사이의 지수로 변환
+        fear_greed = calculate_composite_index(volatility, volume_change, rsi, price_momentum)
+        
+        return {
+            "index": fear_greed,
+            "status": get_market_sentiment(fear_greed),
+            "components": {
+                "volatility": volatility,
+                "volume_change": volume_change,
+                "rsi": rsi,
+                "price_momentum": price_momentum
+            }
+        }
+        
+    except Exception as e:
+        logging.error(f"공포탐욕지수 계산 중 오류: {e}")
+        return {
+            "index": 50,
+            "status": "Neutral",
+            "components": {}
+        }
+
+# 보조 함수들
+def is_doji(df):
+    """도지 캔들 패턴 감지"""
+    latest = df.iloc[-1]
+    return abs(latest['open'] - latest['close']) <= (latest['high'] - latest['low']) * 0.1
+
+def is_hammer(df):
+    """해머 캔들 패턴 감지"""
+    latest = df.iloc[-1]
+    body = abs(latest['open'] - latest['close'])
+    lower_shadow = min(latest['open'], latest['close']) - latest['low']
+    return lower_shadow > body * 2
+
+def is_shooting_star(df):
+    """슈팅스타 캔들 패턴 감지"""
+    latest = df.iloc[-1]
+    body = abs(latest['open'] - latest['close'])
+    upper_shadow = latest['high'] - max(latest['open'], latest['close'])
+    return upper_shadow > body * 2
+
+def estimate_wave_position(df):
+    """엘리엇 파동 위치 추정"""
+    try:
+        # 간단한 파동 위치 추정 로직
+        price_changes = df['close'].pct_change()
+        recent_changes = price_changes.tail(5)
+        
+        if recent_changes.mean() > 0:
+            if recent_changes.iloc[-1] > 0:
+                return {"wave": "Wave 3", "position": "Middle", "confidence": 0.7}
+            else:
+                return {"wave": "Wave 4", "position": "Correction", "confidence": 0.6}
+        else:
+            if recent_changes.iloc[-1] < 0:
+                return {"wave": "Wave 5", "position": "End", "confidence": 0.5}
+            else:
+                return {"wave": "Wave 2", "position": "Correction", "confidence": 0.6}
+                
+    except Exception:
+        return {"wave": "Unknown", "position": "Unknown", "confidence": 0}
+
+def calculate_composite_index(volatility, volume_change, rsi, momentum):
+    """공포탐욕지수 종합 계산"""
+    try:
+        # 각 지표를 0-100 사이로 정규화
+        vol_score = min(max(50 - volatility, 0), 100)
+        vol_change_score = min(max(50 + volume_change, 0), 100)
+        rsi_score = rsi
+        momentum_score = min(max(50 + momentum, 0), 100)
+        
+        # 가중 평균 계산
+        composite = (vol_score * 0.25 + vol_change_score * 0.25 + 
+                    rsi_score * 0.25 + momentum_score * 0.25)
+                    
+        return round(composite, 2)
+        
+    except Exception:
+        return 50
+
+def get_market_sentiment(index):
+    """공포탐욕지수 해석"""
+    if index >= 80:
+        return "Extreme Greed"
+    elif index >= 60:
+        return "Greed"
+    elif index >= 40:
+        return "Neutral"
+    elif index >= 20:
+        return "Fear"
+    else:
+        return "Extreme Fear"
+
+def is_double_top(df):
+    """더블 탑 패턴 감지"""
+    try:
+        # 최근 20개 봉 데이터로 분석
+        recent_data = df.tail(20)
+        highs = recent_data['high'].values
+        
+        # 고점 찾기
+        peaks = []
+        for i in range(1, len(highs)-1):
+            if highs[i] > highs[i-1] and highs[i] > highs[i+1]:
+                peaks.append((i, highs[i]))
+                
+        # 두 개의 비슷한 고점이 있는지 확인
+        if len(peaks) >= 2:
+            last_two_peaks = peaks[-2:]
+            price_diff = abs(last_two_peaks[0][1] - last_two_peaks[1][1])
+            price_threshold = last_two_peaks[0][1] * 0.02  # 2% 오차 허용
+            
+            if price_diff <= price_threshold:
+                return True
+                
+        return False
+        
+    except Exception as e:
+        logging.error(f"더블 탑 패턴 감지 중 오류: {e}")
+        return False
+
+def is_double_bottom(df):
+    """더블 바텀 패턴 감지"""
+    try:
+        # 최근 20개 봉 데이터로 분석
+        recent_data = df.tail(20)
+        lows = recent_data['low'].values
+        
+        # 저점 찾기
+        troughs = []
+        for i in range(1, len(lows)-1):
+            if lows[i] < lows[i-1] and lows[i] < lows[i+1]:
+                troughs.append((i, lows[i]))
+                
+        # 두 개의 비슷한 저점이 있는지 확인
+        if len(troughs) >= 2:
+            last_two_troughs = troughs[-2:]
+            price_diff = abs(last_two_troughs[0][1] - last_two_troughs[1][1])
+            price_threshold = last_two_troughs[0][1] * 0.02  # 2% 오차 허용
+            
+            if price_diff <= price_threshold:
+                return True
+                
+        return False
+        
+    except Exception as e:
+        logging.error(f"더블 바텀 패턴 감지 중 오류: {e}")
+        return False
+
+def is_head_and_shoulders(df):
+    """헤드앤숄더 패턴 감지"""
+    try:
+        # 최근 30개 봉 데이터로 분석
+        recent_data = df.tail(30)
+        highs = recent_data['high'].values
+        
+        # 고점 찾기
+        peaks = []
+        for i in range(1, len(highs)-1):
+            if highs[i] > highs[i-1] and highs[i] > highs[i+1]:
+                peaks.append((i, highs[i]))
+                
+        # 최소 3개의 고점이 필요
+        if len(peaks) >= 3:
+            last_three_peaks = peaks[-3:]
+            
+            # 중간 고점(head)이 양쪽 고점(shoulders)보다 높은지 확인
+            left_shoulder = last_three_peaks[0][1]
+            head = last_three_peaks[1][1]
+            right_shoulder = last_three_peaks[2][1]
+            
+            # 양쪽 어깨의 높이가 비슷한지 확인 (10% 오차 허용)
+            shoulder_diff = abs(left_shoulder - right_shoulder)
+            shoulder_threshold = left_shoulder * 0.1
+            
+            if (head > left_shoulder and 
+                head > right_shoulder and 
+                shoulder_diff <= shoulder_threshold):
+                return True
+                
+        return False
+        
+    except Exception as e:
+        logging.error(f"헤드앤숄더 패턴 감지 중 오류: {e}")
+        return False
+
+# Upbit 객체 초기화
+upbit = pyupbit.Upbit(access_key, secret_key)
 
 if __name__ == "__main__":
     main()
