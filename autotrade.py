@@ -663,7 +663,7 @@ def analyze_elliott_wave(df):
         fib_levels = fibonacci_retracement(df)
         current_price = df['close'].iloc[-1]
         
-        # 파동별 피보나치 레벨 석
+        # 파동별 피보나치 레벨 
         if wave_pattern['current_wave'] in [2, 4]:  # 조정 파동
             if current_price > fib_levels['0.618']:
                 wave_pattern['confidence'] += 0.2
@@ -695,7 +695,7 @@ def analyze_entry_point(df_30min, df_1min, trend):
         if rsi_30min < 35:  # 35로 완화
             entry['action'] = 'buy'
             entry['confidence'] += 0.3
-            entry['reason'].append("30분봉 RSI 매도 구간")
+            entry['reason'].append("30분봉 RSI 매매 구간")
         elif rsi_30min > 65:  # 65로 완화
             entry['action'] = 'sell'
             entry['confidence'] += 0.3
@@ -752,7 +752,7 @@ def analyze_volume_profile(df):
             'volume_zscore': (current_volume - volume_mean) / volume_std
         }
     except Exception as e:
-        logger.error(f"거래량 프로파일 분석 중 오류: {e}")
+        logger.error(f"거래량 프���파일 분석 중 오류: {e}")
         return None
 
 def calculate_risk_score(volatility_data, volume_data):
@@ -942,7 +942,7 @@ def log_monitoring_data(upbit, trend_data=None, entry_data=None):
         percentage = 0
         reason = "정기 모니터링"
         
-        if trend_data and entry_data:
+        if trend_data and isinstance(trend_data, dict) and entry_data and isinstance(entry_data, dict):
             decision = entry_data.get('action', 'hold')
             percentage = int(entry_data.get('confidence', 0) * 100)
             reasons = []
@@ -1013,7 +1013,7 @@ def calculate_confidence_score(technical_analysis, market_data):
         return min(confidence, 1.0)
         
     except Exception as e:
-        logger.error(f"신뢰도 점수 계산 중 오류: {e}")
+        logger.error(f"신뢰도 점수 계산 �� 오류: {e}")
         return 0.0
 
 def generate_trading_reasoning(technical_analysis, market_data, decision):
@@ -1040,13 +1040,13 @@ def execute_trade(upbit, decision):
     try:
         if decision['decision'] == "buy":
             # 매수 가능한 KRW 잔고 확인
-            krw_balance = float(upbit.get_balance("KRW"))
-            if krw_balance < 5000:  # 최소 거래금액
+            krw_balance = upbit.get_balance("KRW")
+            if krw_balance is None or float(krw_balance) < 5000:  # 최소 거래금액
                 logger.info("매수 가능한 KRW 잔고 부족")
                 return None
                 
             # 매수할 금액 계산 (confidence에 따라 조정)
-            buy_amount = krw_balance * decision['position_size']
+            buy_amount = float(krw_balance) * decision['position_size']
             if buy_amount < 5000:
                 buy_amount = 5000  # 최소 거래금액
                 
@@ -1057,16 +1057,16 @@ def execute_trade(upbit, decision):
             
         elif decision['decision'] == "sell":
             # BTC 잔고 확인
-            btc_balance = float(upbit.get_balance("BTC"))
-            if btc_balance <= 0:
+            btc_balance = upbit.get_balance("BTC")
+            if btc_balance is None or float(btc_balance) <= 0:
                 logger.info("매도할 BTC 잔고 없음")
                 return None
                 
             # 매도할 수량 계산 (confidence에 따라 조정)
-            sell_amount = btc_balance * decision['position_size']
+            sell_amount = float(btc_balance) * decision['position_size']
             current_price = pyupbit.get_current_price("KRW-BTC")
             
-            if sell_amount * current_price < 5000:  # 최소 거래금액 체크
+            if current_price is None or sell_amount * current_price < 5000:  # 최소 거래금액 체크
                 logger.info("매도 금액이 최소 거래금액 미만")
                 return None
                 
